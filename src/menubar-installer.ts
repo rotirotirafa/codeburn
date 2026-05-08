@@ -142,6 +142,10 @@ async function killRunningApp(): Promise<void> {
     proc.on('close', () => resolve())
     proc.on('error', () => resolve())
   })
+  for (let i = 0; i < 10; i++) {
+    if (!(await isAppRunning())) return
+    await new Promise(r => setTimeout(r, 500))
+  }
 }
 
 export async function installMenubarApp(options: { force?: boolean } = {}): Promise<InstallResult> {
