@@ -113,6 +113,7 @@ Arrow keys switch between Today, 7 Days, 30 Days, Month, and 6 Months (use `--fr
 | <img src="assets/providers/roo-code.png" width="28" /> | Roo Code | Yes | [roo-code.md](docs/providers/roo-code.md) |
 | <img src="assets/providers/kilo-code.png" width="28" /> | KiloCode | Yes | [kilo-code.md](docs/providers/kilo-code.md) |
 | <img src="assets/providers/qwen.png" width="28" /> | Qwen | Yes | [qwen.md](docs/providers/qwen.md) |
+| <img src="assets/providers/kimi.svg" width="28" /> | Kimi Code CLI | Yes | [kimi.md](docs/providers/kimi.md) |
 | <img src="assets/providers/goose.png" width="28" /> | Goose | Yes | [goose.md](docs/providers/goose.md) |
 | <img src="assets/providers/antigravity.png" width="28" /> | Antigravity | Yes | [antigravity.md](docs/providers/antigravity.md) |
 | <img src="assets/providers/crush.png" width="28" /> | Crush | Yes | [crush.md](docs/providers/crush.md) |
@@ -380,7 +381,9 @@ These are starting points, not verdicts. A 60% cache hit on a single experimenta
 
 **Roo Code / KiloCode** are Cline-family VS Code extensions. CodeBurn reads `ui_messages.json` from each task directory in VS Code's `globalStorage`, filtering `type: "say"` entries with `say: "api_req_started"` to extract token counts.
 
-CodeBurn deduplicates messages (by API message ID for Claude, by cumulative token cross-check for Codex, by conversation/timestamp for Cursor, by session ID for Gemini, by session+message ID for OpenCode, by responseId for Pi/OMP), filters by date range per entry, and classifies each turn.
+**Kimi Code CLI** stores session logs under `$KIMI_SHARE_DIR/sessions/<workdir-hash>/<session-id>/` or `~/.kimi/sessions/<workdir-hash>/<session-id>/`. CodeBurn reads `wire.jsonl` `StatusUpdate.token_usage` records, maps `input_other`, `input_cache_read`, `input_cache_creation`, and `output` into the standard token columns, and includes subagent sessions under each session's `subagents/` folder.
+
+CodeBurn deduplicates messages (by API message ID for Claude, by cumulative token cross-check for Codex, by conversation/timestamp for Cursor, by session ID for Gemini, by session+message ID for OpenCode, by responseId for Pi/OMP, by session+message ID for Kimi), filters by date range per entry, and classifies each turn.
 
 ## Environment Variables
 
@@ -390,6 +393,8 @@ CodeBurn deduplicates messages (by API message ID for Claude, by cumulative toke
 | `CLAUDE_CONFIG_DIRS` | OS-delimited list of Claude data directories to scan together (e.g. `~/.claude-work:~/.claude-personal`). Sessions merge into one row per project. Overrides `CLAUDE_CONFIG_DIR` when set. |
 | `CODEX_HOME` | Override Codex data directory (default: `~/.codex`) |
 | `FACTORY_DIR` | Override Droid data directory (default: `~/.factory`) |
+| `KIMI_SHARE_DIR` | Override Kimi Code CLI share directory (default: `~/.kimi`) |
+| `KIMI_MODEL_NAME` | Override Kimi model name when Kimi sessions do not record the model |
 | `QWEN_DATA_DIR` | Override Qwen data directory (default: `~/.qwen/projects`) |
 
 ## Sponsoring CodeBurn

@@ -13,6 +13,7 @@ const PROVIDERS = [
   { id: 'goose', label: 'Goose' },
   { id: 'kilo-code', label: 'Kilo Code' },
   { id: 'kiro', label: 'Kiro' },
+  { id: 'kimi', label: 'Kimi' },
   { id: 'openclaw', label: 'OpenClaw' },
   { id: 'opencode', label: 'OpenCode' },
   { id: 'pi', label: 'Pi' },

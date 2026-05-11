@@ -41,6 +41,7 @@ const PROVIDERS = [
   { id: 'gemini', label: 'Gemini' },
   { id: 'kilo-code', label: 'Kilo Code' },
   { id: 'kiro', label: 'Kiro' },
+  { id: 'kimi', label: 'Kimi' },
   { id: 'roo-code', label: 'Roo Code' },
 ];
 
@@ -69,6 +70,7 @@ const PROVIDER_PATHS = {
   codex: '.codex/sessions',
   cursor: '.config/Cursor/User/globalStorage/state.vscdb',
   copilot: '.copilot/session-state',
+  kimi: '.kimi/sessions',
   pi: '.pi/agent/sessions',
 };
 

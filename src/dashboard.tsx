@@ -54,6 +54,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   cursor: '#00B4D8',
   opencode: '#A78BFA',
   pi: '#F472B6',
+  kimi: '#B6E34A',
   all: '#FF8C42',
 }
 
@@ -515,6 +516,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   cursor: 'Cursor',
   opencode: 'OpenCode',
   pi: 'Pi',
+  kimi: 'Kimi',
 }
 function getProviderDisplayName(name: string): string { return PROVIDER_DISPLAY_NAMES[name] ?? name }
 

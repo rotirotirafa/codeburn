@@ -50,6 +50,10 @@ const KNOWN_NAMES = [
   'kiro-auto',
   'cline-auto',
   'qwen-auto',
+  'kimi-auto',
+  'kimi-for-coding',
+  'kimi-k2-thinking-turbo',
+  'kimi-k2.6',
   'o3',
   'o4-mini',
   'deepseek-coder',
@@ -84,6 +88,14 @@ describe('post-hoist resolution stability', () => {
   it('claude-haiku-4-5 does NOT collapse to claude-haiku-4 or claude-3-5-haiku', () => {
     expect(getShortModelName('claude-haiku-4-5')).toBe('Haiku 4.5')
     expect(getShortModelName('claude-3-5-haiku')).toBe('Haiku 3.5')
+  })
+
+  it('kimi managed aliases resolve to priced Kimi models', () => {
+    expect(getShortModelName('kimi-auto')).toBe('Kimi (auto)')
+    expect(getShortModelName('kimi-for-coding')).toBe('Kimi K2 Thinking')
+    expect(getShortModelName('kimi-k2-thinking-turbo')).toBe('Kimi K2 Thinking Turbo')
+    expect(getShortModelName('kimi-k2.6')).toBe('Kimi K2.6')
+    expect(getModelCosts('kimi-auto')?.inputCostPerToken).toBeGreaterThan(0)
   })
 
   it('getModelCosts returns positive token costs for every known name', () => {

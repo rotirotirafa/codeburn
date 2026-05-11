@@ -128,9 +128,9 @@ type Provider = {
 }
 ```
 
-`src/providers/index.ts` registers eighteen providers across two tiers:
+`src/providers/index.ts` registers nineteen providers across two tiers:
 
-- **Eager**: `claude`, `codex`, `copilot`, `droid`, `gemini`, `kilo-code`, `kiro`, `openclaw`, `pi`, `omp`, `qwen`, `roo-code`. Imported at module load.
+- **Eager**: `claude`, `codex`, `copilot`, `droid`, `gemini`, `kilo-code`, `kiro`, `openclaw`, `pi`, `omp`, `qwen`, `kimi`, `roo-code`. Imported at module load.
 - **Lazy**: `antigravity`, `goose`, `cursor`, `opencode`, `cursor-agent`, `crush`. Imported via dynamic `import()` so the heavy dependencies (SQLite, protobuf) do not touch users who do not have those tools installed.
 
 Both lists hit the same `getAllProviders()` aggregator. A failed lazy import is silent and excludes that provider from the run.
@@ -181,7 +181,7 @@ The `prepublishOnly` hook in `package.json` runs `npm run build` so `npm publish
 
 - `tests/` root (27 files) covers CLI, parser, optimize, cache, format, models, plans.
 - `tests/security/` (1 file) covers prototype-pollution guards.
-- `tests/providers/` (14 files) covers per-provider parsing.
+- `tests/providers/` (15 files) covers per-provider parsing.
 - `tests/fixtures/` holds redacted real-world session data.
 
 Five providers ship without dedicated test files today: `antigravity`, `claude`, `gemini`, `goose`, `qwen`. Closing this gap is a standing good-first-issue.
