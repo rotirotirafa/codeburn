@@ -46,7 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusPayloadRefreshGeneration: UInt64 = 0
     private var manualRefreshTask: Task<Void, Never>?
     private var manualRefreshGeneration: UInt64 = 0
+    private var claudeQuotaRefreshTask: Task<Bool, Never>?
+    private var codexQuotaRefreshTask: Task<Bool, Never>?
     private var refreshLoopHeartbeatAt: Date = .distantPast
+    private var lastLaunchAgentHeartbeatAt: Date = .distantPast
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Set accessory policy before the app's focus chain forms. On macOS Tahoe
@@ -135,9 +138,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.recoverRefreshPipelineAfterInterruption(resetLoading: false, reason: "launch agent")
+                self?.handleLaunchAgentHeartbeat()
             }
         }
+    }
+
+    private func handleLaunchAgentHeartbeat() {
+        let now = Date()
+        guard now.timeIntervalSince(lastLaunchAgentHeartbeatAt) >= refreshRateLimitSeconds else { return }
+        lastLaunchAgentHeartbeatAt = now
+        let loopAge = now.timeIntervalSince(refreshLoopHeartbeatAt)
+        guard refreshTimer == nil || loopAge > refreshLoopWatchdogSeconds else {
+            _ = store.clearStaleLoadingIfNeeded()
+            _ = clearStaleForceRefreshIfNeeded(now: now)
+            _ = clearStaleStatusPayloadRefreshIfNeeded(now: now)
+            return
+        }
+        if refreshTimer != nil {
+            NSLog("CodeBurn: refresh loop stale for %ds after launch agent - restarting", Int(loopAge))
+        }
+        startRefreshLoop(forceQuotaOnStart: false)
     }
 
     private func prepareRefreshPipelineForSleep() {
@@ -181,9 +201,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if refreshTimer != nil {
                 NSLog("CodeBurn: refresh loop stale for %ds after %@ - restarting", Int(loopAge), reason)
             }
-            startRefreshLoop()
+            startRefreshLoop(forceQuotaOnStart: false)
         } else {
-            runRefreshLoopTick(reason: reason, forcePayload: true, forceQuota: true)
+            runRefreshLoopTick(reason: reason, forcePayload: true, forceQuota: false)
         }
     }
 
@@ -244,7 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard !UserDefaults.standard.bool(forKey: key) else { return }
 
         let appPath = Bundle.main.bundlePath
-        let script = "tell application \"System Events\" to make login item at end with properties {path:\"\(appPath)\", hidden:false}"
+        let script = "tell application \"System Events\" to make login item at end with properties {path:\(appleScriptStringLiteral(appPath)), hidden:false}"
 
         let process = Process()
         process.launchPath = "/usr/bin/osascript"
@@ -261,6 +281,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } catch {
             NSLog("CodeBurn: Login item registration failed: \(error)")
         }
+    }
+
+    private func appleScriptStringLiteral(_ value: String) -> String {
+        var escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
+        escaped = escaped.replacingOccurrences(of: "\"", with: "\\\"")
+        escaped = escaped.replacingOccurrences(of: "\r", with: "")
+        escaped = escaped.replacingOccurrences(of: "\n", with: "")
+        return "\"\(escaped)\""
     }
 
     private var lastRefreshTime: Date = .distantPast
@@ -405,22 +433,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         switch (shouldRefreshClaude, shouldRefreshCodex) {
         case (true, true):
-            async let claude = store.refreshSubscriptionReportingSuccess()
-            async let codex = store.refreshCodexReportingSuccess()
+            async let claude = refreshClaudeQuotaSingleFlight()
+            async let codex = refreshCodexQuotaSingleFlight()
             if await claude { lastSubscriptionRefreshAt = Date() }
             if await codex { lastCodexRefreshAt = Date() }
         case (true, false):
-            if await store.refreshSubscriptionReportingSuccess() {
+            if await refreshClaudeQuotaSingleFlight() {
                 lastSubscriptionRefreshAt = Date()
             }
         case (false, true):
-            if await store.refreshCodexReportingSuccess() {
+            if await refreshCodexQuotaSingleFlight() {
                 lastCodexRefreshAt = Date()
             }
         case (false, false):
             break
         }
         return true
+    }
+
+    private func refreshClaudeQuotaSingleFlight() async -> Bool {
+        if let task = claudeQuotaRefreshTask {
+            return await task.value
+        }
+        let task = Task { [store] in
+            await store.refreshSubscriptionReportingSuccess()
+        }
+        claudeQuotaRefreshTask = task
+        let result = await task.value
+        if claudeQuotaRefreshTask != nil {
+            claudeQuotaRefreshTask = nil
+        }
+        return result
+    }
+
+    private func refreshCodexQuotaSingleFlight() async -> Bool {
+        if let task = codexQuotaRefreshTask {
+            return await task.value
+        }
+        let task = Task { [store] in
+            await store.refreshCodexReportingSuccess()
+        }
+        codexQuotaRefreshTask = task
+        let result = await task.value
+        if codexQuotaRefreshTask != nil {
+            codexQuotaRefreshTask = nil
+        }
+        return result
     }
 
     private func refreshLiveQuotaProgressForPopoverOpen() {
@@ -477,9 +535,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
-    private func startRefreshLoop() {
+    private func startRefreshLoop(forceQuotaOnStart: Bool = false) {
         stopRefreshTimer()
-        runRefreshLoopTick(reason: "start", forcePayload: true, forceQuota: true)
+        runRefreshLoopTick(reason: "start", forcePayload: true, forceQuota: forceQuotaOnStart)
 
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(
@@ -822,14 +880,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             await updateChecker.check()
             let alert = NSAlert()
             alert.icon = codeburnAlertIcon()
-            if updateChecker.updateAvailable, let latest = updateChecker.latestVersion {
+            if let error = updateChecker.updateError {
+                alert.messageText = "Update Check Failed"
+                alert.informativeText = error
+                alert.alertStyle = .warning
+            } else if updateChecker.updateAvailable, let latest = updateChecker.latestVersion {
                 alert.messageText = "Update Available"
                 alert.informativeText = "\(AppVersion.display(latest)) is available (you have \(AppVersion.display(updateChecker.currentVersion))). Run:\n\ncodeburn menubar --force"
+                alert.alertStyle = .informational
             } else {
                 alert.messageText = "Up to Date"
                 alert.informativeText = "You're on the latest version (\(AppVersion.display(updateChecker.currentVersion)))."
+                alert.alertStyle = .informational
             }
-            alert.alertStyle = .informational
             alert.addButton(withTitle: "OK")
             alert.runModal()
         }

@@ -254,10 +254,14 @@ final class AppStore {
         }
     }
 
-    private func invalidateStaleDayCache() {
+    private func currentCacheDate() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
-        let today = formatter.string(from: Date())
+        return formatter.string(from: Date())
+    }
+
+    private func invalidateStaleDayCache() {
+        let today = currentCacheDate()
         if cacheDate != today {
             payloadRefreshGeneration &+= 1
             cache.removeAll()
@@ -324,7 +328,8 @@ final class AppStore {
             // fetch, this payload was computed against yesterday's date and
             // would pollute today's freshly-cleared cache. Drop it; the next
             // tick will refetch with today's data.
-            if cacheDate != cacheDateAtStart {
+            if cacheDate != cacheDateAtStart || cacheDate != currentCacheDate() {
+                invalidateStaleDayCache()
                 NSLog("CodeBurn: dropping fetch result for \(key.period.rawValue)/\(key.provider.rawValue) — calendar rolled mid-fetch")
                 return
             }
@@ -339,7 +344,10 @@ final class AppStore {
                     let fallback = try await DataClient.fetch(period: key.period, provider: key.provider, includeOptimize: false)
                     guard !Task.isCancelled else { return }
                     if generationAtStart != payloadRefreshGeneration { return }
-                    if cacheDate != cacheDateAtStart { return }
+                    if cacheDate != cacheDateAtStart || cacheDate != currentCacheDate() {
+                        invalidateStaleDayCache()
+                        return
+                    }
                     cache[key] = CachedPayload(payload: fallback, fetchedAt: Date())
                     lastSuccessByKey[key] = Date()
                     lastErrorByKey[key] = nil
@@ -384,7 +392,10 @@ final class AppStore {
             }
             // Same day-rollover guard as refresh(): drop yesterday's payload if
             // the calendar rolled over during the fetch.
-            if cacheDate != cacheDateAtStart { return }
+            if cacheDate != cacheDateAtStart || cacheDate != currentCacheDate() {
+                invalidateStaleDayCache()
+                return
+            }
             cache[key] = CachedPayload(payload: fresh, fetchedAt: Date())
             lastSuccessByKey[key] = Date()
             lastErrorByKey[key] = nil
@@ -607,7 +618,7 @@ final class AppStore {
 
     var aggregateQuotaStatus: AggregateQuotaStatus {
         var providers: [(name: String, percent: Double)] = []
-        if case .loaded = subscriptionLoadState, let usage = subscription {
+        if let usage = subscription, shouldIncludeCachedQuota(loadState: subscriptionLoadState) {
             let worst = [
                 usage.fiveHourPercent,
                 usage.sevenDayPercent,
@@ -616,7 +627,7 @@ final class AppStore {
             ].compactMap { $0 }.max() ?? 0
             if worst > 0 { providers.append(("Claude", worst)) }
         }
-        if case .loaded = codexLoadState, let usage = codexUsage {
+        if let usage = codexUsage, shouldIncludeCachedQuota(loadState: codexLoadState) {
             let worst = max(usage.primary?.usedPercent ?? 0, usage.secondary?.usedPercent ?? 0)
             if worst > 0 { providers.append(("Codex", worst)) }
         }
@@ -625,6 +636,15 @@ final class AppStore {
         let sorted = providers.sorted { $0.percent > $1.percent }
         let warnings = sorted.filter { $0.percent >= 70 }
         return AggregateQuotaStatus(severity: severity, warnings: warnings)
+    }
+
+    private func shouldIncludeCachedQuota(loadState: SubscriptionLoadState) -> Bool {
+        switch loadState {
+        case .notBootstrapped, .bootstrapping, .noCredentials:
+            return false
+        case .loading, .loaded, .failed, .terminalFailure, .transientFailure:
+            return true
+        }
     }
 
     func quotaSummary(for filter: ProviderFilter) -> QuotaSummary? {
@@ -824,6 +844,7 @@ enum ProviderFilter: String, CaseIterable, Identifiable {
     case claude = "Claude"
     case codex = "Codex"
     case cursor = "Cursor"
+    case cursorAgent = "Cursor Agent"
     case copilot = "Copilot"
     case droid = "Droid"
     case gemini = "Gemini"
@@ -837,16 +858,21 @@ enum ProviderFilter: String, CaseIterable, Identifiable {
     case omp = "OMP"
     case rooCode = "Roo Code"
     case crush = "Crush"
+    case antigravity = "Antigravity"
+    case goose = "Goose"
 
     var id: String { rawValue }
 
     var providerKeys: [String] {
         switch self {
-        case .cursor: ["cursor", "cursor agent"]
+        case .cursor: ["cursor"]
+        case .cursorAgent: ["cursor-agent", "cursor agent"]
         case .rooCode: ["roo-code", "roo code"]
         case .kiloCode: ["kilo-code", "kilocode"]
         case .ibmBob: ["ibm-bob", "ibm bob"]
         case .openclaw: ["openclaw"]
+        case .antigravity: ["antigravity"]
+        case .goose: ["goose"]
         default: [rawValue.lowercased()]
         }
     }
@@ -857,6 +883,7 @@ enum ProviderFilter: String, CaseIterable, Identifiable {
         case .claude: "claude"
         case .codex: "codex"
         case .cursor: "cursor"
+        case .cursorAgent: "cursor-agent"
         case .copilot: "copilot"
         case .droid: "droid"
         case .gemini: "gemini"
@@ -870,6 +897,8 @@ enum ProviderFilter: String, CaseIterable, Identifiable {
         case .omp: "omp"
         case .rooCode: "roo-code"
         case .crush: "crush"
+        case .antigravity: "antigravity"
+        case .goose: "goose"
         }
     }
 }
