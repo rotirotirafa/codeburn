@@ -624,6 +624,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             // Track currency so the menubar title catches up immediately on
             // currency switch instead of waiting for the next 30s payload tick.
             _ = self.store.currency
+            _ = self.store.displayMetric
+            _ = self.store.dailyBudget
             // Track the live-quota state too so the flame icon re-tints on
             // every subscription / codex usage update, not just every 30s.
             _ = self.store.subscription
@@ -709,7 +711,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         // warning/critical/danger override with a fixed palette color so the
         // user gets a glanceable signal even when the menu bar is busy.
         let aggregate = store.aggregateQuotaStatus
-        let tint = Self.flameTint(for: aggregate.severity)
+        var tint = Self.flameTint(for: aggregate.severity)
+        if tint == nil, store.dailyBudget > 0,
+           let todayCost = store.todayPayload?.current.cost, todayCost >= store.dailyBudget {
+            tint = NSColor.systemYellow
+        }
         let flameConfig: NSImage.SymbolConfiguration
         if let tint {
             flameConfig = baseConfig.applying(.init(paletteColors: [tint]))
@@ -728,11 +734,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         let hasPayload = store.todayPayload != nil
         let compact = isCompact
-        let fallback = compact ? "$-" : "$—"
-        let formatted = store.todayPayload?.current.cost
-        let valueText = compact
-            ? (formatted?.asCompactCurrencyWhole() ?? fallback)
-            : " " + (formatted?.asCompactCurrency() ?? fallback)
+        let valueText: String
+        if store.displayMetric == .tokens, let p = store.todayPayload?.current {
+            let out = formatTokensMenubar(Double(p.outputTokens))
+            let inp = formatTokensMenubar(Double(p.inputTokens))
+            valueText = compact ? "↑\(out)↓\(inp)" : " ↑\(out) ↓\(inp)"
+        } else if store.displayMetric == .totalTokens, let p = store.todayPayload?.current {
+            let total = formatTokensMenubar(Double(p.inputTokens + p.outputTokens))
+            valueText = compact ? total : " \(total) tok"
+        } else {
+            let fallback = compact ? "$-" : "$—"
+            let formatted = store.todayPayload?.current.cost
+            valueText = compact
+                ? (formatted?.asCompactCurrencyWhole() ?? fallback)
+                : " " + (formatted?.asCompactCurrency() ?? fallback)
+        }
 
         var textAttrs: [NSAttributedString.Key: Any] = [.font: font, .baselineOffset: -1.0]
         if !hasPayload {
@@ -743,6 +759,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         composed.append(NSAttributedString(attachment: attachment))
         composed.append(NSAttributedString(string: valueText, attributes: textAttrs))
         button.attributedTitle = composed
+    }
+
+    private func formatTokensMenubar(_ n: Double) -> String {
+        if n >= 1_000_000_000 { return String(format: "%.1fB", n / 1_000_000_000) }
+        if n >= 1_000_000 { return String(format: "%.1fM", n / 1_000_000) }
+        if n >= 1_000 { return String(format: "%.0fK", n / 1_000) }
+        return String(format: "%.0f", n)
     }
 
     // MARK: - Popover

@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import { Command } from 'commander'
 import { installMenubarApp } from './menubar-installer.js'
 import { exportCsv, exportJson, type PeriodExport } from './export.js'
@@ -476,8 +477,14 @@ program
         const todayInRange = todayDays.filter(d => d.date >= rangeStartStr && d.date <= rangeEndStr)
         const allDays = [...historicalDays, ...todayInRange].sort((a, b) => a.date.localeCompare(b.date))
         currentData = buildPeriodDataFromDays(allDays, periodInfo.label)
-        scanProjects = todayProjects
-        scanRange = todayRange
+        const isTodayOnly = opts.period === 'today'
+        if (isTodayOnly) {
+          scanProjects = todayProjects
+          scanRange = todayRange
+        } else {
+          scanProjects = fp(await parseAllSessions(periodInfo.range, 'all'))
+          scanRange = periodInfo.range
+        }
       } else {
         cache = await loadDailyCache()
         const cacheIsCurrent = cache.lastComputedDate !== null
@@ -632,8 +639,98 @@ program
         dailyHistory = [...histFromCache, ...liveDays]
       }
 
+      const home = homedir()
+      const friendlyProject = (p: ProjectSummary) => {
+        const resolved = p.projectPath || p.project
+        if (resolved === home || resolved === home + '/') return 'Home'
+        return resolved.split('/').filter(Boolean).pop() || p.project
+      }
+
+      currentData.projects = scanProjects.map(p => ({
+        name: friendlyProject(p),
+        cost: p.totalCostUSD,
+        sessions: p.sessions.length,
+        sessionDetails: [...p.sessions]
+          .sort((a, b) => b.totalCostUSD - a.totalCostUSD)
+          .slice(0, 10)
+          .map(s => ({
+            cost: s.totalCostUSD,
+            calls: s.apiCalls,
+            inputTokens: s.totalInputTokens,
+            outputTokens: s.totalOutputTokens,
+            date: s.firstTimestamp?.split('T')[0] ?? '',
+            models: Object.entries(s.modelBreakdown)
+              .map(([name, m]) => ({ name, cost: m.costUSD }))
+              .sort((a, b) => b.cost - a.cost)
+              .slice(0, 3),
+          })),
+      }))
+
+      const effMap = aggregateModelEfficiency(scanProjects)
+      currentData.modelEfficiency = [...effMap.entries()].map(([name, eff]) => ({
+        name,
+        costPerEdit: eff.costPerEditUSD,
+        oneShotRate: eff.oneShotRate,
+      }))
+
+      const retryTaxByModel = [...effMap.values()]
+        .filter(m => m.retries > 0 && m.editTurns > 0)
+        .map(m => ({
+          name: m.model,
+          taxUSD: m.retries * (m.editCostUSD / m.editTurns),
+          retries: m.retries,
+          retriesPerEdit: m.retriesPerEdit,
+        }))
+        .sort((a, b) => b.taxUSD - a.taxUSD)
+      const retryTax = {
+        totalUSD: retryTaxByModel.reduce((s, m) => s + m.taxUSD, 0),
+        retries: retryTaxByModel.reduce((s, m) => s + m.retries, 0),
+        editTurns: [...effMap.values()].filter(m => m.retries > 0).reduce((s, m) => s + m.editTurns, 0),
+        byModel: retryTaxByModel.slice(0, 5),
+      }
+
+      currentData.topSessions = scanProjects.flatMap(p =>
+        p.sessions.map(s => ({
+          project: friendlyProject(p),
+          cost: s.totalCostUSD,
+          calls: s.apiCalls,
+          date: s.firstTimestamp?.split('T')[0] ?? '',
+        }))
+      ).sort((a, b) => b.cost - a.cost).slice(0, 5)
+
+      // Routing waste: find cheapest reliable model (≥90% 1-shot, ≥5 edits),
+      // then compute how much each pricier model overpaid.
+      const reliableModels = [...effMap.values()]
+        .filter(m => m.oneShotRate !== null && m.oneShotRate >= 90 && m.editTurns >= 5
+          && (m.costPerEditUSD ?? 0) >= 0.01)
+        .sort((a, b) => (a.costPerEditUSD ?? Infinity) - (b.costPerEditUSD ?? Infinity))
+      const baseline = reliableModels[0]
+      const routingWasteByModel = baseline
+        ? [...effMap.values()]
+            .filter(m => m.model !== baseline.model && m.editTurns > 0 && (m.costPerEditUSD ?? 0) > (baseline.costPerEditUSD ?? 0))
+            .map(m => {
+              const counterfactual = m.editTurns * (baseline.costPerEditUSD ?? 0)
+              return {
+                name: m.model,
+                costPerEdit: m.costPerEditUSD ?? 0,
+                editTurns: m.editTurns,
+                actualUSD: m.editCostUSD,
+                counterfactualUSD: counterfactual,
+                savingsUSD: m.editCostUSD - counterfactual,
+              }
+            })
+            .filter(m => m.savingsUSD > 0)
+            .sort((a, b) => b.savingsUSD - a.savingsUSD)
+        : []
+      const routingWaste = {
+        totalSavingsUSD: routingWasteByModel.reduce((s, m) => s + m.savingsUSD, 0),
+        baselineModel: baseline?.model ?? '',
+        baselineCostPerEdit: baseline?.costPerEditUSD ?? 0,
+        byModel: routingWasteByModel.slice(0, 5),
+      }
+
       const optimize = opts.optimize === false ? null : await scanAndDetect(scanProjects, scanRange)
-      console.log(JSON.stringify(buildMenubarPayload(currentData, providers, optimize, dailyHistory)))
+      console.log(JSON.stringify(buildMenubarPayload(currentData, providers, optimize, dailyHistory, retryTax, routingWaste)))
       return
     }
 

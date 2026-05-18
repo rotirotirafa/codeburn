@@ -40,6 +40,14 @@ private struct GeneralSettingsTab: View {
                         Text(code).tag(code)
                     }
                 }
+                Picker("Metric", selection: Binding(
+                    get: { store.displayMetric },
+                    set: { store.displayMetric = $0 }
+                )) {
+                    Text("Cost ($)").tag(DisplayMetric.cost)
+                    Text("Tokens (↑↓)").tag(DisplayMetric.tokens)
+                    Text("Total Tokens").tag(DisplayMetric.totalTokens)
+                }
                 Picker("Accent", selection: Binding(
                     get: { store.accentPreset },
                     set: { store.accentPreset = $0 }
@@ -48,6 +56,23 @@ private struct GeneralSettingsTab: View {
                         Text(preset.rawValue).tag(preset)
                     }
                 }
+            }
+
+            Section("Alerts") {
+                Picker("Daily budget", selection: Binding(
+                    get: { store.dailyBudget },
+                    set: { store.dailyBudget = $0 }
+                )) {
+                    Text("Off").tag(0.0)
+                    Text("$25").tag(25.0)
+                    Text("$50").tag(50.0)
+                    Text("$100").tag(100.0)
+                    Text("$200").tag(200.0)
+                    Text("$500").tag(500.0)
+                }
+                Text("Flame icon turns yellow when you pass the daily budget.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

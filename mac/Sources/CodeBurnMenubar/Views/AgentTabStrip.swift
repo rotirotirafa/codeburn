@@ -129,9 +129,6 @@ struct AgentTabStrip: View {
     private func cost(for filter: ProviderFilter) -> Double? {
         let data = periodAll
         if filter == .all { return data.current.cost }
-        if filter == store.selectedProvider, store.hasCachedData {
-            return store.payload.current.cost
-        }
         let providers = Dictionary(
             data.current.providers.map { ($0.key.lowercased(), $0.value) },
             uniquingKeysWith: +

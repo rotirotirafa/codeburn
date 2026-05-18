@@ -26,6 +26,12 @@ final class AppStore {
     }
     var showingAccentPicker: Bool = false
     var currency: String = "USD"
+    var displayMetric: DisplayMetric = DisplayMetric(rawValue: UserDefaults.standard.string(forKey: "CodeBurnDisplayMetric") ?? "") ?? .cost {
+        didSet { UserDefaults.standard.set(displayMetric.rawValue, forKey: "CodeBurnDisplayMetric") }
+    }
+    var dailyBudget: Double = UserDefaults.standard.double(forKey: "CodeBurnDailyBudget") {
+        didSet { UserDefaults.standard.set(dailyBudget, forKey: "CodeBurnDailyBudget") }
+    }
     var isLoading: Bool { loadingCountsByKey.values.contains { $0 > 0 } }
     var isCurrentKeyLoading: Bool { loadingCountsByKey[currentKey, default: 0] > 0 }
     var hasAttemptedCurrentKeyLoad: Bool { attemptedKeys.contains(currentKey) }
@@ -934,12 +940,17 @@ enum SubscriptionLoadState: Sendable, Equatable {
     case transientFailure(retryAt: Date?)  // 429 / network blip; backing off automatically
 }
 
+enum DisplayMetric: String {
+    case cost, tokens, totalTokens
+}
+
 enum InsightMode: String, CaseIterable, Identifiable {
     case plan = "Plan"
     case trend = "Trend"
     case forecast = "Forecast"
     case pulse = "Pulse"
     case stats = "Stats"
+    case optimize = "Optimize"
     var id: String { rawValue }
 }
 

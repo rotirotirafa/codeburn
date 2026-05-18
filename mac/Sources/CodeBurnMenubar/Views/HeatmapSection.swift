@@ -1,8 +1,5 @@
 import SwiftUI
 
-private let trendDays = 19
-private let trendBarWidth: CGFloat = 13
-private let trendBarGap: CGFloat = 4
 private let trendChartHeight: CGFloat = 90
 
 // Cached formatters and a calendar to avoid allocating fresh ones on every
@@ -82,10 +79,11 @@ struct HeatmapSection: View {
             } else {
                 PlanInsight(usage: store.subscription)
             }
-        case .trend: TrendInsight(days: store.payload.history.daily)
+        case .trend: TrendInsight(days: store.payload.history.daily, period: store.selectedPeriod)
         case .forecast: ForecastInsight(days: store.payload.history.daily)
         case .pulse: PulseInsight(payload: store.payload)
         case .stats: StatsInsight(payload: store.payload)
+        case .optimize: OptimizeInsight(payload: store.payload)
         }
     }
 }
@@ -122,10 +120,25 @@ private struct InsightPillSwitcher: View {
 
 private struct TrendInsight: View {
     let days: [DailyHistoryEntry]
+    let period: Period
+
+    private var trendDayCount: Int {
+        switch period {
+        case .today, .sevenDays: return 19
+        case .thirtyDays: return 30
+        case .month: return 31
+        case .all: return min(days.count, 90)
+        }
+    }
+
+    private var barGap: CGFloat {
+        trendDayCount > 45 ? 2 : 4
+    }
 
     var body: some View {
-        let bars = buildTrendBars(from: days)
-        let stats = computeTrendStats(bars: bars, allDays: days)
+        let dayCount = trendDayCount
+        let bars = buildTrendBars(from: days, dayCount: dayCount)
+        let stats = computeTrendStats(bars: bars, allDays: days, dayCount: dayCount)
         // Tokens are real for the .all-providers view; per-provider history doesn't carry
         // token breakdown yet, so fall back to $ when no tokens are present.
         let totalTokens = bars.reduce(0.0) { $0 + $1.tokens }
@@ -139,7 +152,7 @@ private struct TrendInsight: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Last \(trendDays) days")
+                    Text("Last \(dayCount) days")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.tertiary)
                     Text(formatHero(useTokens: useTokens, tokens: totalTokens, dollars: stats.totalThisWindow))
@@ -152,7 +165,7 @@ private struct TrendInsight: View {
                     HStack(spacing: 3) {
                         Image(systemName: delta >= 0 ? "arrow.up.right" : "arrow.down.right")
                             .font(.system(size: 9, weight: .bold))
-                        Text("\(delta >= 0 ? "+" : "")\(String(format: "%.0f", delta))% vs prior \(trendDays)d")
+                        Text("\(delta >= 0 ? "+" : "")\(String(format: "%.0f", delta))% vs prior \(dayCount)d")
                             .font(.system(size: 10.5))
                             .monospacedDigit()
                     }
@@ -165,7 +178,8 @@ private struct TrendInsight: View {
                 maxValue: maxValue,
                 avgValue: avgValue,
                 metric: metric,
-                formatValue: { formatValue($0, useTokens: useTokens) }
+                formatValue: { formatValue($0, useTokens: useTokens) },
+                barGap: barGap
             )
             .zIndex(1)
 
@@ -209,20 +223,26 @@ private struct TrendChart: View {
     let avgValue: Double
     let metric: (TrendBar) -> Double
     let formatValue: (Double) -> String
+    let barGap: CGFloat
 
     @State private var hoveredBarID: TrendBar.ID?
+
+    private var peakBarID: TrendBar.ID? {
+        bars.filter { metric($0) > 0 }.max(by: { metric($0) < metric($1) })?.id
+    }
 
     var body: some View {
         let avgFraction = maxValue > 0 ? CGFloat(min(avgValue / maxValue, 1.0)) : 0
 
         ZStack(alignment: .bottomLeading) {
-            HStack(alignment: .bottom, spacing: trendBarGap) {
+            HStack(alignment: .bottom, spacing: barGap) {
                 ForEach(bars) { bar in
                     BarColumn(
                         bar: bar,
                         value: metric(bar),
                         maxValue: maxValue,
-                        isHovered: hoveredBarID == bar.id
+                        isHovered: hoveredBarID == bar.id,
+                        isPeak: bar.id == peakBarID
                     )
                     .onHover { hovering in
                         hoveredBarID = hovering ? bar.id : (hoveredBarID == bar.id ? nil : hoveredBarID)
@@ -245,8 +265,6 @@ private struct TrendChart: View {
         }
         .frame(height: trendChartHeight)
         .overlay(alignment: .bottomLeading) {
-            // Floats below the chart without taking layout space. Opaque dark card hides
-            // whatever sits beneath it (mini stats, activity rows).
             if let hoveredBar {
                 BarTooltipCard(bar: hoveredBar, value: metric(hoveredBar), formatValue: formatValue)
                     .padding(.top, 6)
@@ -270,16 +288,24 @@ private struct BarColumn: View {
     let value: Double
     let maxValue: Double
     let isHovered: Bool
+    let isPeak: Bool
 
     var body: some View {
         let fraction = maxValue > 0 ? CGFloat(value / maxValue) : 0
         let height = max(2, trendChartHeight * fraction)
 
-        VStack(spacing: 2) {
+        VStack(spacing: 0) {
             Spacer(minLength: 0)
+            if isPeak && value > 0 {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.yellow.opacity(0.85))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(2, trendChartHeight * 0.05))
+            }
             RoundedRectangle(cornerRadius: 2)
                 .fill(barColor)
-                .frame(width: trendBarWidth, height: height)
+                .frame(maxWidth: .infinity)
+                .frame(height: height)
                 .overlay(
                     RoundedRectangle(cornerRadius: 2)
                         .stroke(Theme.brandAccent.opacity(isHovered ? 0.9 : 0), lineWidth: 1)
@@ -293,7 +319,9 @@ private struct BarColumn: View {
     private var barColor: Color {
         if bar.isToday { return Theme.brandAccent }
         if value <= 0 { return Color.secondary.opacity(0.15) }
-        return isHovered ? Theme.brandAccent.opacity(0.85) : Theme.brandAccent.opacity(0.55)
+        if isHovered { return Theme.brandAccent.opacity(0.85) }
+        let ratio = maxValue > 0 ? value / maxValue : 0
+        return Theme.brandAccent.opacity(0.42 + ratio * 0.48)
     }
 }
 
@@ -342,18 +370,23 @@ private struct BarTooltipCard: View {
 
             if !bar.topModels.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
-                    ForEach(bar.topModels.prefix(4), id: \.name) { m in
+                    ForEach(Array(bar.topModels.prefix(4).enumerated()), id: \.element.name) { idx, m in
                         HStack(spacing: 6) {
-                            Circle().fill(Theme.brandAccent.opacity(0.7)).frame(width: 4, height: 4)
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(Theme.brandAccent.opacity(0.75 - Double(idx) * 0.12))
+                                .frame(width: 3, height: 12)
                             Text(m.name)
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(primaryText)
+                                .lineLimit(1)
                             Spacer()
+                            if m.cost > 0 {
+                                Text(m.cost.asCompactCurrency())
+                                    .font(.codeMono(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(secondaryText)
+                            }
                             Text("\(formatTokensCompact(Double(m.totalTokens))) tok")
                                 .font(.codeMono(size: 9.5, weight: .medium))
-                                .foregroundStyle(secondaryText)
-                            Text("(\(formatTokensCompact(Double(m.inputTokens)))/\(formatTokensCompact(Double(m.outputTokens))))")
-                                .font(.codeMono(size: 9, weight: .regular))
                                 .foregroundStyle(tertiaryText)
                         }
                     }
@@ -390,7 +423,7 @@ private struct MiniStat: View {
     let value: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(.tertiary)
@@ -399,7 +432,13 @@ private struct MiniStat: View {
                 .monospacedDigit()
                 .foregroundStyle(.primary)
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(nsColor: .separatorColor).opacity(0.35))
+        )
     }
 }
 
@@ -424,7 +463,7 @@ private struct TrendStats {
     let yesterdayBar: TrendBar?
 }
 
-private func buildTrendBars(from days: [DailyHistoryEntry]) -> [TrendBar] {
+private func buildTrendBars(from days: [DailyHistoryEntry], dayCount: Int) -> [TrendBar] {
     let calendar = gregorianCalendar
     let formatter = yyyymmdd
     let entryByDate = Dictionary(days.map { ($0.date, $0) }, uniquingKeysWith: { _, new in new })
@@ -432,7 +471,7 @@ private func buildTrendBars(from days: [DailyHistoryEntry]) -> [TrendBar] {
     let todayKey = formatter.string(from: today)
 
     var bars: [TrendBar] = []
-    for offset in (0..<trendDays).reversed() {
+    for offset in (0..<dayCount).reversed() {
         guard let d = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
         let key = formatter.string(from: d)
         let entry = entryByDate[key]
@@ -448,7 +487,7 @@ private func buildTrendBars(from days: [DailyHistoryEntry]) -> [TrendBar] {
     return bars
 }
 
-private func computeTrendStats(bars: [TrendBar], allDays: [DailyHistoryEntry]) -> TrendStats {
+private func computeTrendStats(bars: [TrendBar], allDays: [DailyHistoryEntry], dayCount: Int) -> TrendStats {
     let total = bars.reduce(0.0) { $0 + $1.cost }
     let active = bars.filter { $0.cost > 0 }.count
     let avg = bars.isEmpty ? 0 : total / Double(bars.count)
@@ -457,8 +496,8 @@ private func computeTrendStats(bars: [TrendBar], allDays: [DailyHistoryEntry]) -
     let calendar = gregorianCalendar
     let formatter = yyyymmdd
     let today = calendar.startOfDay(for: Date())
-    let priorWindowStart = calendar.date(byAdding: .day, value: -(2 * trendDays - 1), to: today)
-    let thisWindowStart = calendar.date(byAdding: .day, value: -(trendDays - 1), to: today)
+    let priorWindowStart = calendar.date(byAdding: .day, value: -(2 * dayCount - 1), to: today)
+    let thisWindowStart = calendar.date(byAdding: .day, value: -(dayCount - 1), to: today)
     var deltaPercent: Double? = nil
     if let priorStart = priorWindowStart, let thisStart = thisWindowStart {
         let priorStartStr = formatter.string(from: priorStart)
@@ -629,16 +668,19 @@ private struct PulseInsight: View {
     let payload: MenubarPayload
 
     var body: some View {
-        HStack(spacing: 10) {
-            PulseTile(label: "Cache hit", value: cacheHitText, color: Theme.brandAccent)
-            PulseTile(label: "1-shot", value: oneShotText, color: oneShotColor)
-            PulseTile(
-                label: "Cost / session",
-                value: payload.current.sessions > 0
-                    ? (payload.current.cost / Double(payload.current.sessions)).asCompactCurrency()
-                    : "—",
-                color: .secondary
-            )
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                PulseTile(label: "Cache hit", value: cacheHitText, color: Theme.brandAccent)
+                PulseTile(label: "1-shot", value: oneShotText, color: oneShotColor)
+                PulseTile(
+                    label: "Cost / session",
+                    value: payload.current.sessions > 0
+                        ? (payload.current.cost / Double(payload.current.sessions)).asCompactCurrency()
+                        : "—",
+                    color: .secondary
+                )
+            }
+            CostPerEditCaption(models: payload.current.modelEfficiency)
         }
     }
 
@@ -679,6 +721,53 @@ private struct PulseTile: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.secondary.opacity(0.06))
         )
+    }
+}
+
+private struct CostPerEditCaption: View {
+    let models: [ModelEfficiencyEntry]
+
+    var body: some View {
+        let valid = models.compactMap { m -> (String, Double)? in
+            guard let cpe = m.costPerEdit, cpe > 0 else { return nil }
+            return (m.name, cpe)
+        }.sorted(by: { $0.1 < $1.1 })
+
+        if let best = valid.first {
+            HStack(spacing: 4) {
+                Image(systemName: "pencil.line")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                Text("Cost/edit")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                Text(formatCPE(best.1))
+                    .font(.codeMono(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Theme.brandAccent)
+                Text(best.0)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if valid.count > 1, let worst = valid.last, worst.0 != best.0 {
+                    Text("—")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.quaternary)
+                    Text(formatCPE(worst.1))
+                        .font(.codeMono(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text(worst.0)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private func formatCPE(_ v: Double) -> String {
+        if v < 0.01 { return String(format: "$%.3f", v) }
+        return String(format: "$%.2f", v)
     }
 }
 
@@ -777,6 +866,112 @@ private struct StatsInsight: View {
                         .foregroundStyle(Theme.brandAccent)
                 }
             }
+
+            if !payload.current.topProjects.isEmpty {
+                Divider().opacity(0.5)
+                TopProjectsList(projects: payload.current.topProjects)
+            }
+
+            if let top = payload.current.topSessions.first, top.cost > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "flame")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Theme.brandAccent)
+                    Text("Costliest session")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Text(top.cost.asCompactCurrency())
+                        .font(.codeMono(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Text("· \(projectDisplayName(top.project))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+
+        }
+    }
+}
+
+private struct RetryTaxSection: View {
+    let retryTax: RetryTax
+    let totalCost: Double
+    @State private var expanded = false
+
+    var body: some View {
+        if retryTax.totalUSD > 0 {
+            Divider().opacity(0.5)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.2.squarepath")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.orange)
+                    Text("Retry tax")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Text(retryTax.totalUSD.asCompactCurrency())
+                        .font(.codeMono(size: 11, weight: .bold))
+                        .foregroundStyle(.orange)
+                        .monospacedDigit()
+                    if totalCost > 0 {
+                        Text("(\(Int((retryTax.totalUSD / totalCost * 100).rounded()))%)")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.quaternary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        expanded.toggle()
+                    }
+                }
+
+                Text("\(retryTax.retries) retries across \(retryTax.editTurns) edits")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.quaternary)
+
+                if expanded {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(retryTax.byModel.enumerated()), id: \.offset) { idx, model in
+                            HStack(spacing: 0) {
+                                Text(model.name)
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                if let rpe = model.retriesPerEdit {
+                                    Text(String(format: "%.1f ret/edit", rpe))
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.quaternary)
+                                        .padding(.trailing, 8)
+                                }
+                                Text(model.taxUSD.asCompactCurrency())
+                                    .font(.codeMono(size: 10, weight: .semibold))
+                                    .foregroundStyle(.orange.opacity(0.85))
+                                    .monospacedDigit()
+                            }
+                            .padding(.vertical, 2)
+                            .padding(.horizontal, 6)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(.orange.opacity(0.05)))
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top))
+                                        .animation(.spring(response: 0.3, dampingFraction: 0.8).delay(Double(idx) * 0.03)),
+                                    removal: .opacity.animation(.easeOut(duration: 0.12))
+                                )
+                            )
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
         }
     }
 }
@@ -794,6 +989,257 @@ private struct StatRow: View {
                 .font(.system(size: 12, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(.primary)
+        }
+    }
+}
+
+private func projectDisplayName(_ path: String) -> String {
+    path.split(separator: "/").last.map(String.init) ?? path
+}
+
+private struct TopProjectsList: View {
+    let projects: [ProjectEntry]
+    @State private var expanded: String?
+
+    var body: some View {
+        let top = Array(projects.prefix(3))
+        let maxCost = top.first?.cost ?? 1
+
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(top.enumerated()), id: \.offset) { idx, project in
+                let expandKey = "\(idx):\(project.name)"
+                let isOpen = expanded == expandKey
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(.quaternary)
+                            .rotationEffect(.degrees(isOpen ? 90 : 0))
+                        Text(projectDisplayName(project.name))
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(project.sessions) sess")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.quaternary)
+                        Text(project.cost.asCompactCurrency())
+                            .font(.codeMono(size: 10.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Theme.brandAccent.opacity(0.5))
+                            .frame(
+                                width: max(2, 40 * CGFloat(project.cost / max(maxCost, 0.01))),
+                                height: 6
+                            )
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                            expanded = isOpen ? nil : expandKey
+                        }
+                    }
+
+                    if isOpen, !project.sessionDetails.isEmpty {
+                        SessionDetailsList(sessions: project.sessionDetails)
+                            .padding(.top, 6)
+                            .padding(.leading, 14)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SessionDetailsList: View {
+    let sessions: [SessionDetailEntry]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(sessions.prefix(5).enumerated()), id: \.offset) { idx, sess in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 0) {
+                        Text(sess.cost.asCompactCurrency())
+                            .font(.codeMono(size: 10, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .monospacedDigit()
+                            .frame(width: 52, alignment: .trailing)
+                        Text("  \(sess.calls) calls")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.quaternary)
+                        Spacer()
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 7, weight: .semibold))
+                            Text(compactTokens(sess.inputTokens))
+                        }
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 7, weight: .semibold))
+                            Text(compactTokens(sess.outputTokens))
+                        }
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 4)
+                    }
+                    HStack(spacing: 4) {
+                        ForEach(Array(sess.models.prefix(3).enumerated()), id: \.offset) { _, model in
+                            Text(model.name)
+                                .font(.system(size: 8.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Theme.brandAccent.opacity(0.1))
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .padding(.leading, 52)
+                }
+                .padding(.vertical, 3)
+                .padding(.horizontal, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(.primary.opacity(0.03))
+                )
+                .transition(
+                    .asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top))
+                            .animation(.spring(response: 0.3, dampingFraction: 0.8).delay(Double(idx) * 0.03)),
+                        removal: .opacity.animation(.easeOut(duration: 0.15))
+                    )
+                )
+            }
+        }
+    }
+
+    private func compactTokens(_ n: Int) -> String {
+        let d = Double(n)
+        if d >= 1_000_000 { return String(format: "%.1fM", d / 1_000_000) }
+        if d >= 1_000 { return String(format: "%.0fK", d / 1_000) }
+        return "\(n)"
+    }
+}
+
+// MARK: - Optimize
+
+private struct OptimizeInsight: View {
+    let payload: MenubarPayload
+
+    var body: some View {
+        let totalWaste = payload.current.retryTax.totalUSD + payload.current.routingWaste.totalSavingsUSD
+        let cost = payload.current.cost
+
+        VStack(alignment: .leading, spacing: 12) {
+            if totalWaste > 0, cost > 0 {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Potential savings")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        Text(totalWaste.asCompactCurrency())
+                            .font(.system(size: 24, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.orange)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("\(Int((totalWaste / cost * 100).rounded()))% of spend")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.orange.opacity(0.8))
+                        Text("could be optimized")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.quaternary)
+                    }
+                }
+                .padding(.bottom, 2)
+            }
+
+            RetryTaxSection(retryTax: payload.current.retryTax, totalCost: cost)
+
+            RoutingWasteSection(routingWaste: payload.current.routingWaste, totalCost: cost)
+        }
+    }
+}
+
+private struct RoutingWasteSection: View {
+    let routingWaste: RoutingWaste
+    let totalCost: Double
+    @State private var expanded = false
+
+    var body: some View {
+        if routingWaste.totalSavingsUSD > 0 {
+            Divider().opacity(0.5)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.swap")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.purple)
+                    Text("Routing waste")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Text(routingWaste.totalSavingsUSD.asCompactCurrency())
+                        .font(.codeMono(size: 11, weight: .bold))
+                        .foregroundStyle(.purple)
+                        .monospacedDigit()
+                    if totalCost > 0 {
+                        Text("(\(Int((routingWaste.totalSavingsUSD / totalCost * 100).rounded()))%)")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.quaternary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        expanded.toggle()
+                    }
+                }
+
+                if !routingWaste.baselineModel.isEmpty {
+                    Text("vs \(routingWaste.baselineModel) @ \(routingWaste.baselineCostPerEdit.asCompactCurrency())/edit")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.quaternary)
+                }
+
+                if expanded {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(routingWaste.byModel.enumerated()), id: \.offset) { idx, model in
+                            HStack(spacing: 0) {
+                                Text(model.name)
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "$%.2f/edit", model.costPerEdit))
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.quaternary)
+                                    .padding(.trailing, 8)
+                                Text(model.savingsUSD.asCompactCurrency())
+                                    .font(.codeMono(size: 10, weight: .semibold))
+                                    .foregroundStyle(.purple.opacity(0.85))
+                                    .monospacedDigit()
+                            }
+                            .padding(.vertical, 2)
+                            .padding(.horizontal, 6)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(.purple.opacity(0.05)))
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top))
+                                        .animation(.spring(response: 0.3, dampingFraction: 0.8).delay(Double(idx) * 0.03)),
+                                    removal: .opacity.animation(.easeOut(duration: 0.12))
+                                )
+                            )
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
         }
     }
 }

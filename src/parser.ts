@@ -1823,7 +1823,7 @@ async function parseProviderSources(
   return projects
 }
 
-const CACHE_TTL_MS = 60_000
+const CACHE_TTL_MS = 180_000
 const MAX_CACHE_ENTRIES = 10
 const sessionCache = new Map<string, { data: ProjectSummary[]; ts: number }>()
 
